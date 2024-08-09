@@ -752,14 +752,14 @@ const ItemEditor = memo(function ItemEditor({
 const setInvalidAtom = atom(
   null,
   (get, set, widgetAtom: WidgetAtom, invalid: boolean) => {
-    const prev = get(widgetAtom);
+    const state = get(widgetAtom);
     const errors = invalid
       ? {
-          invalid: i18n.get("{0} is invalid", prev.attrs.title),
+          invalid: i18n.get("{0} is invalid", state.attrs.title),
         }
       : {};
-    if (isEqual(errors, prev.errors ?? {})) return;
-    set(widgetAtom, { ...prev, errors });
+    if (isEqual(errors, state.errors ?? {})) return;
+    set(widgetAtom, (prev) => ({ ...prev, errors }));
   },
 );
 
@@ -775,9 +775,7 @@ const findState = (
   const jsonFields = schema.jsonFields ?? {};
   const prefix = `${name}.`;
 
-  const isJsonField = (key: string) => {
-    return json && name === "attrs" && key in jsonFields;
-  };
+  const isJsonField = (key: string) => json && key in jsonFields;
 
   const makeKey = (key: string) => {
     return key.startsWith(prefix) ? key.substring(prefix.length) : key;
@@ -787,7 +785,10 @@ const findState = (
   const parentStates = parentState.statesByName;
 
   const states = Object.entries(parentStates)
-    .filter(([key]) => key.startsWith(prefix) || isJsonField(key))
+    .filter(
+      ([key]) =>
+        key.startsWith(prefix) && isJsonField(key.slice(prefix.length)),
+    )
     .reduce(
       (acc, [key, value]) => {
         return { ...acc, [makeKey(key)]: value };

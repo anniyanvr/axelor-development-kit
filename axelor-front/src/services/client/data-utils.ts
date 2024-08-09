@@ -4,7 +4,7 @@ import { produce } from "immer";
 
 import { compactJson, isReferenceField } from "@/views/form/builder/utils";
 import { DataRecord } from "./data.types";
-import { JsonField, Property, Schema } from "./meta.types";
+import { Property, Schema } from "./meta.types";
 
 /**
  * Checks if the given name is the name of a dummy field.
@@ -178,34 +178,31 @@ export function updateRecord(
 
   for (const [key, value] of Object.entries(source)) {
     let newValue = value;
-    if (newValue === result[key]) {
+    if (
+      newValue === result[key] ||
+      // check for numeric values
+      (!isNaN(result[key]) && +newValue === +result[key])
+    ) {
       continue;
     }
 
     // to set values of json fields
-    if (key.includes(".")) {
+    if (key.includes(".") && findJsonItem?.(key)) {
       const [jsonField, ...fieldParts] = key.split(".");
       const subField = fieldParts.join(".");
-      const hasExplictDefined = fields?.[key]?.jsonField;
-      const hasDefinedInJsonItems = () => {
-        const jsonItem = findJsonItem?.(subField);
-        return jsonItem?.jsonField === jsonField;
-      };
 
-      if (hasExplictDefined || hasDefinedInJsonItems()) {
-        const _values =
-          jsonFieldsValue[jsonField] ??
-          (jsonFieldsValue[jsonField] = toJSON(result[jsonField]));
+      const _values =
+        jsonFieldsValue[jsonField] ??
+        (jsonFieldsValue[jsonField] = toJSON(result[jsonField]));
 
-        if (!equals(_values[subField], value)) {
-          changed = true;
-          jsonFieldsValue[jsonField] = {
-            ..._values,
-            [subField]: value,
-          };
-        }
-        continue;
+      if (!equals(_values[subField], value)) {
+        changed = true;
+        jsonFieldsValue[jsonField] = {
+          ..._values,
+          [subField]: value,
+        };
       }
+      continue;
     }
 
     // to set values of editor dotted fields

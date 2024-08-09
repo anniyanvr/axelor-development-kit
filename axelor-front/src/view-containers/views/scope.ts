@@ -22,13 +22,9 @@ import {
 import { SearchOptions } from "@/services/client/data";
 import { equalsIgnoreClean } from "@/services/client/data-utils";
 import { ViewData } from "@/services/client/meta";
-import {
-  JsonField,
-  Property,
-  Schema,
-  ViewType,
-} from "@/services/client/meta.types";
+import { Schema, ViewType } from "@/services/client/meta.types";
 import { focusAtom } from "@/utils/atoms";
+import { findViewItem } from "@/utils/schema";
 import { FormAtom, usePrepareContext } from "@/views/form/builder";
 import {
   useCanDirty,
@@ -70,7 +66,7 @@ export const MetaScope = createScope<ViewData<ViewType>>({
 
 const metaMolecule = molecule((getMol, getScope) => {
   const meta = getScope(MetaScope);
-  return atom(meta);
+  return atom<{ meta: typeof meta; items?: Schema[] }>({ meta });
 });
 
 /**
@@ -355,7 +351,9 @@ export function useViewConfirmDirty() {
  */
 export function useViewMeta() {
   const metaAtom = useMolecule(metaMolecule);
-  const meta = useAtomValue(metaAtom);
+  const meta = useAtomValue(
+    useMemo(() => selectAtom(metaAtom, (s) => s.meta), [metaAtom]),
+  );
 
   const findField = useCallback((name: string) => meta.fields?.[name], [meta]);
 
@@ -364,19 +362,24 @@ export function useViewMeta() {
     [meta],
   );
 
-  const findItems = useMemo(() => {
-    return (() => {
-      let items: Schema[] | null = null;
-      return (): Schema[] => {
-        if (items === null) {
-          items = findSchemaItems(meta.view).map((item) =>
-            item.name ? findItem(item.name) ?? { ...item } : { ...item },
-          );
-        }
-        return items;
-      };
-    })();
-  }, [findItem, meta.view]);
+  const findItems = useAtomCallback(
+    useCallback(
+      (get, set) => {
+        const { items } = get(metaAtom);
+        return (
+          items ??
+          (() => {
+            const viewItems = findSchemaItems(meta.view).map((item) =>
+              item.name ? findItem(item.name) ?? { ...item } : { ...item },
+            );
+            set(metaAtom, (prev) => ({ ...prev, items: viewItems }));
+            return viewItems;
+          })()
+        );
+      },
+      [metaAtom, findItem, meta.view],
+    ),
+  );
 
   return {
     meta,
@@ -386,91 +389,8 @@ export function useViewMeta() {
   } as const;
 }
 
-export function findViewItem<T extends ViewType>(
-  meta: ViewData<T>,
-  fieldName: string,
-) {
-  const { view, fields = {} } = meta;
-  return walkSchema(view, fields, [], ({ path, schema, field }) => {
-    const name = path.join(".");
-    if (name === fieldName) {
-      const serverType = schema?.serverType || field?.type;
-      const more = serverType ? { serverType } : {};
-      return {
-        ...field,
-        ...schema,
-        ...schema?.widgetAttrs,
-        ...more,
-      };
-    }
-  });
-}
-
-export function findJsonFieldItem<T extends ViewType>(
-  meta: ViewData<T>,
-  fieldName: string,
-) {
-  const { view } = meta;
-  function findItem(schema: Schema): JsonField | undefined {
-    const jsonField = (schema.jsonFields ?? []).find(
-      (item: JsonField) => item.jsonField && item.jsonPath === fieldName,
-    );
-    return (
-      jsonField ??
-      (() => {
-        for (const item of schema.items ?? []) {
-          const jsonItem = findItem(item);
-          if (jsonItem) return jsonItem;
-        }
-      })()
-    );
-  }
-  return findItem(view);
-}
-
 function findSchemaItems(schema: Schema): Schema[] {
   const items = schema.type !== "panel-related" ? schema.items ?? [] : [];
   const nested = items.flatMap((item) => findSchemaItems(item));
   return [...items, ...nested];
-}
-
-function findFields(schema: Schema) {
-  const fields: Record<string, Property> =
-    schema.fields ?? schema.editor?.fields ?? {};
-  return fields;
-}
-
-function walkSchema(
-  schema: Schema,
-  schemaFields: Record<string, Property>,
-  schemaPath: string[],
-  callback: (params: {
-    path: string[];
-    name: string;
-    schema: Schema;
-    field?: Schema;
-  }) => Schema | undefined,
-): Schema | undefined {
-  const name = schema.name;
-  const items = schema.items ?? schema.editor?.items ?? [];
-  const path = name ? [...schemaPath, ...name.split(".")] : schemaPath;
-
-  if (name) {
-    const res = callback({
-      path,
-      name,
-      schema,
-      field: schemaFields[name],
-    });
-    if (res) return res;
-  }
-
-  const isRelation = schema.fields ?? schema.editor?.fields;
-  const parentPath = isRelation ? path : schemaPath;
-  const parentFields = isRelation ? findFields(schema) : schemaFields;
-
-  for (const item of items) {
-    const res = walkSchema(item, parentFields, parentPath, callback);
-    if (res) return res;
-  }
 }

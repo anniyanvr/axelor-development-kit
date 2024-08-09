@@ -210,13 +210,13 @@ function GridInner(props: ViewProps<GridView>) {
     ),
   );
 
-  const getActionData = useCallback(() => {
-    if (selectedIdsRef.current?.length) return;
-    return {
+  const getActionData = useCallback(
+    () => ({
       ...dataStore.options?.filter,
       ...getSearchOptions().filter,
-    };
-  }, [dataStore, getSearchOptions]);
+    }),
+    [dataStore, getSearchOptions],
+  );
 
   const doSearch = useCallback(
     (options: SearchOptions = {}) =>
@@ -552,6 +552,7 @@ function GridInner(props: ViewProps<GridView>) {
       : null;
   const selectedDetail =
     selectedRow?.type !== "row" ? null : selectedRow?.record;
+  const hasManySelected = (selectedRows?.length ?? 0) > 1;
 
   const onLoadDetails = useCallback(
     (e: any, row: GridRow) => {
@@ -572,6 +573,7 @@ function GridInner(props: ViewProps<GridView>) {
 
   useAsyncEffect(async () => {
     if (!detailsMeta) return;
+    if (hasManySelected) return fetchAndSetDetailsRecord(null);
     const record = selectedDetail?.id ? selectedDetail : null;
     if (record && hasRowSelectedFromState.current) {
       hasRowSelectedFromState.current = false;
@@ -579,7 +581,7 @@ function GridInner(props: ViewProps<GridView>) {
     }
     initDetailsRef.current && fetchAndSetDetailsRecord(record);
     initDetailsRef.current = true;
-  }, [selectedDetail?.id, detailsMeta, dataStore]);
+  }, [hasManySelected, selectedDetail?.id, detailsMeta, dataStore]);
 
   useAsyncEffect(async () => {
     if (
@@ -878,16 +880,18 @@ function GridInner(props: ViewProps<GridView>) {
           }),
       }
     : {};
+
   const detailsProps: Partial<GridProps> = hasDetailsView
     ? {
         ...(detailsViewOverlay && { onView: undefined }),
-        ...(!detailsRecord && {
-          onRowClick: detailsViewOverlay
-            ? onShowDetails
-            : selectedDetail
-              ? onLoadDetails
-              : undefined,
-        }),
+        ...(!detailsRecord &&
+          !hasManySelected && {
+            onRowClick: detailsViewOverlay
+              ? onShowDetails
+              : selectedDetail
+                ? onLoadDetails
+                : undefined,
+          }),
       }
     : {};
 

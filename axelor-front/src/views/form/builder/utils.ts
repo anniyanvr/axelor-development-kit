@@ -1,8 +1,12 @@
-import { uniqueId } from "lodash";
+import uniqueId from "lodash/uniqueId";
+import isUndefined from "lodash/isUndefined";
+import pick from "lodash/pick";
+import uniq from "lodash/uniq";
 
 import { DataContext, DataRecord } from "@/services/client/data.types";
 import {
   Field,
+  JsonField,
   Panel,
   Property,
   Schema,
@@ -140,7 +144,7 @@ export function isIntegerField(schema: Schema) {
 }
 
 export function isReferenceField(schema: Schema) {
-  const type = toKebabCase(schema.serverType ?? schema.widget);
+  const type = toKebabCase(schema.serverType ?? schema.widget ?? schema.type);
   return Boolean(type?.endsWith("-to-one"));
 }
 
@@ -165,7 +169,10 @@ export function defaultAttrs(schema: Schema): Attrs {
   return attrs;
 }
 
-export function processContextValues(context: DataContext) {
+export function processContextValues(
+  context: DataContext,
+  meta?: FormState["meta"],
+) {
   const IGNORE = [
     "$attachments",
     "$processInstanceId",
@@ -209,36 +216,73 @@ export function processContextValues(context: DataContext) {
     return value;
   }
 
-  return process(context);
-}
+  const values = process(context);
 
-export function processSaveValues(
-  record: DataRecord,
-  fields: FormState["fields"],
-) {
-  const values = processContextValues(record);
+  if (meta) {
+    const { fields = {}, jsonFields } = meta;
 
-  Object.keys(values).forEach((fieldName) => {
-    const field = fields[fieldName];
-    if (field?.json) {
-      let value = values[fieldName];
-      if (value && typeof value === "string") {
-        try {
-          value = JSON.parse(value);
-        } catch {
-          // handle error
+    Object.keys(values).forEach((fieldName) => {
+      const isJson =
+        fields[fieldName]?.json || Boolean(jsonFields?.[fieldName]);
+      if (isJson) {
+        let value = values[fieldName];
+        if (value && typeof value === "string") {
+          try {
+            value = JSON.parse(value);
+          } catch {
+            // handle error
+          }
         }
+        values[fieldName] = value
+          ? compactJson(value, {
+              findItem: (jsonPath: string) => {
+                function findTargetNames(schema: Schema): Schema[] {
+                  const items =
+                    schema.type !== "panel-related" ? schema.items ?? [] : [];
+                  const nested = items.flatMap((item) => findTargetNames(item));
+                  return [
+                    ...items
+                      .filter((item) => item.json && item.name === fieldName)
+                      .map(
+                        (item) =>
+                          item.jsonFields?.find(
+                            (jsonItem: JsonField) => jsonItem.name === jsonPath,
+                          )?.targetName,
+                      ),
+                    ...nested,
+                  ];
+                }
+                const field = jsonFields?.[fieldName]?.[jsonPath];
+                return {
+                  name: jsonPath,
+                  ...field,
+                  targetNames: uniq(
+                    [field?.targetName, ...findTargetNames(meta.view)].filter(
+                      Boolean,
+                    ),
+                  ),
+                } as Schema;
+              },
+            })
+          : value;
       }
-      values[fieldName] = value ? compactJson(value) : value;
-    }
-  });
+    });
+  }
 
   return values;
 }
 
-export function compactJson(record: DataRecord) {
+export function processSaveValues(record: DataRecord, meta: FormState["meta"]) {
+  return processContextValues(record, meta);
+}
+
+export function compactJson(
+  record: DataRecord,
+  { findItem }: { findItem?: (name: string) => Schema } = {},
+) {
   const rec: DataRecord = {};
   Object.entries(record).forEach(([k, v]) => {
+    const field = findItem?.(k);
     if (k.indexOf("$") === 0 || v === null || v === undefined) return;
     if (typeof v === "string" && v.trim() === "") return;
     if (Array.isArray(v)) {
@@ -246,6 +290,19 @@ export function compactJson(record: DataRecord) {
       v = v.map(function (x) {
         return x.id ? { id: x.id } : x;
       });
+    } else if (v && typeof v === "object" && field && isReferenceField(field)) {
+      const { targetNames = [] } = field;
+      v = {
+        id: v.id,
+        $version: v.version ?? v.$version,
+        ...(targetNames as string[]).reduce(
+          (vals, name) => ({
+            ...vals,
+            [name]: v[name],
+          }),
+          {},
+        ),
+      };
     }
     rec[k] = v;
   });
@@ -298,9 +355,9 @@ export function processView(
 
   res.serverType = getFieldServerType(res, field);
   res.uid = res.uid ?? uniqueId("w");
-  
+
   if (res.widget) {
-    res.widgetAttrs = ({ ...res.widgetAttrs, widget: res.widget });
+    res.widgetAttrs = { ...res.widgetAttrs, widget: res.widget };
   }
 
   res.widget = getWidget(res, field);
@@ -327,6 +384,10 @@ export function processView(
 
   if ((res.showIf || res.hideIf) && !isCollectionItem && !isPanelTabs) {
     res.hidden = true;
+    // custom json fields when showIf/hideIf is defined
+    if (!isUndefined(res.widgetAttrs?.hidden)) {
+      res.widgetAttrs.hidden = true;
+    }
   }
 
   // for editable grid case : avoid fields blinking
@@ -348,7 +409,7 @@ export function processView(
 
   if (res.widget === "email") {
     res.pattern =
-      "^[a-zA-Z0-9.!#$%&\'*+\\/=?^_`{|}~-]+@([a-zA-Z0-9-]+\\.)+[a-zA-Z0-9]{2,}$";
+      "^[a-zA-Z0-9.!#$%&'*+\\/=?^_`{|}~-]+@([a-zA-Z0-9-]+\\.)+[a-zA-Z0-9]{2,}$";
   }
 
   if (res.items) {
@@ -454,6 +515,10 @@ function getDefaultJsonFieldValues(widgets?: Widget[]) {
 export function removeVersion(record: DataRecord) {
   const { version, $version, ...rest } = record;
   return { ...rest, $version: version ?? $version } as DataRecord;
+}
+
+export function processM2OValue(record: DataRecord, targetName: string) {
+  return pick(removeVersion(record), ["id", "$version", targetName]);
 }
 
 // Types that are saved independently from main record

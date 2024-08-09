@@ -1,5 +1,5 @@
 import { produce } from "immer";
-import { atom, useAtomValue, useSetAtom } from "jotai";
+import { atom, useAtomValue } from "jotai";
 import { createScope, molecule, useMolecule } from "bunshi/react";
 import { selectAtom, useAtomCallback } from "jotai/utils";
 import { isEqual, isNumber, set as setDeep } from "lodash";
@@ -14,6 +14,7 @@ import { isCleanDummy, updateRecord } from "@/services/client/data-utils";
 import { DataContext, DataRecord } from "@/services/client/data.types";
 import { Schema, View } from "@/services/client/meta.types";
 import { toKebabCase } from "@/utils/names";
+import { findJsonFieldItem, findViewItem } from "@/utils/schema";
 import {
   ActionAttrsData,
   ActionData,
@@ -23,13 +24,8 @@ import {
   DefaultActionExecutor,
   DefaultActionHandler,
 } from "@/view-containers/action";
-import {
-  findJsonFieldItem,
-  findViewItem,
-  useViewMeta,
-  useViewTab,
-} from "@/view-containers/views/scope";
 
+import { useViewMeta, useViewTab } from "@/view-containers/views/scope";
 import { fallbackFormAtom } from "./atoms";
 import {
   FormAtom,
@@ -426,43 +422,62 @@ function useActionAttrs({
   formAtom: FormAtom;
   actionHandler: ActionHandler;
 }) {
-  const { findItem } = useViewMeta();
   useActionData<ActionAttrsData>(
     useCallback((x) => x.type === "attrs", []),
     useAtomCallback(
       useCallback(
         (get, set, { attrs }) => {
-          let { statesByName, states } = get(formAtom);
+          const formState = get(formAtom);
+          const isJsonScope = formState.meta.view?.json;
+          const updateFormAtom = isJsonScope ? formState.parent! : formAtom;
+          const updateFormState = isJsonScope ? get(updateFormAtom) : formState;
+
+          let { statesByName } = updateFormState;
 
           attrs.forEach((attr) => {
-            const { target, name, value } = attr;
+            const { name, value } = attr;
 
-            const updateState = (
-              newState: WidgetState,
-              fieldName: string,
-              columnName?: string,
-            ) => {
-              statesByName = { ...statesByName, [fieldName]: newState };
-              states = produce(states, (prev) => {
-                // reset widget's own state so that the attribute set by the action get preference.
-                Object.values(prev).forEach((state) => {
-                  if (state.name !== fieldName) return;
-                  if (columnName) {
-                    delete (state.columns?.[columnName] as any)?.[name];
-                  } else if (name in state.attrs) {
-                    delete (state.attrs as any)?.[name];
-                  }
-                });
-              });
-            };
+            const jsonItem = findJsonFieldItem(
+              updateFormState.meta,
+              attr.target,
+            );
+
+            const [target, targetFieldName] = (() => {
+              const { target } = attr;
+
+              const isFormField = updateFormState.fields[jsonItem?.name ?? ""];
+              const isOwnJsonField =
+                isJsonScope && formState.fields[jsonItem?.name ?? ""];
+
+              if (
+                !isFormField &&
+                jsonItem &&
+                (jsonItem.modelField === "attrs" ||
+                  target.startsWith(jsonItem.modelField) ||
+                  isOwnJsonField)
+              ) {
+                const { modelField } = jsonItem;
+                return target.startsWith(modelField!)
+                  ? [target, target.slice(modelField!.length + 1)]
+                  : [`${modelField}.${target}`, target];
+              }
+              return [target, target];
+            })();
 
             // collection field column ?
-            if (target.includes(".")) {
-              const fieldName = target.split(".")[0];
-              const field = findItem(fieldName);
+            if (targetFieldName.includes(".")) {
+              const fieldName = targetFieldName.split(".")[0];
+              const field = findViewItem(updateFormState.meta, fieldName);
+              const stateName =
+                target !== targetFieldName && jsonItem
+                  ? `${jsonItem.modelField}.${fieldName}`
+                  : fieldName;
+
               if (field && isCollection(field) && !field.editor) {
-                const state = statesByName[fieldName] ?? {};
-                const column = target.substring(target.indexOf(".") + 1);
+                const state = statesByName[stateName] ?? {};
+                const column = targetFieldName.substring(
+                  targetFieldName.indexOf(".") + 1,
+                );
                 const columns = state.columns ?? {};
                 const newState = {
                   ...state,
@@ -474,7 +489,10 @@ function useActionAttrs({
                     },
                   },
                 };
-                return updateState(newState, fieldName, column);
+                return (statesByName = {
+                  ...statesByName,
+                  [stateName]: newState,
+                });
               }
             }
 
@@ -495,17 +513,15 @@ function useActionAttrs({
                     },
                   }),
             };
-
-            updateState(newState, target);
+            statesByName = { ...statesByName, [target]: newState };
           });
 
-          set(formAtom, (prev) => ({
+          set(updateFormAtom, (prev) => ({
             ...prev,
             statesByName,
-            states,
           }));
         },
-        [findItem, formAtom],
+        [formAtom],
       ),
     ),
     actionHandler,
@@ -626,25 +642,33 @@ function useActionRecord({
 
           const updateFormAtom = isJsonScope ? formState.parent! : formAtom;
           const updateFormState = get(updateFormAtom);
-          const cacheJsonFields: Record<string, any> = {};
-          const getJsonField = (key: string) => {
-            // skip in case of record field
-            if (key in updateFormState.fields) return;
-            if (cacheJsonFields[key] !== undefined) return cacheJsonFields[key];
-            return (
-              (isJsonScope && formState.fields[key]) ??
-              (cacheJsonFields[key] =
-                findJsonFieldItem(updateFormState.meta, key) || null)
-            );
-          };
+          const findJsonItem = (key: string) =>
+            findJsonFieldItem(updateFormState.meta, key);
 
           const values = (() => {
             return Object.keys(data.value).reduce((vals, key) => {
               const value = data.value[key];
-              const field = getJsonField(key);
+
+              // if field in form fields, it takes preference over custom field
+              const field = !updateFormState.fields[key]
+                ? findJsonItem(key)
+                : null;
+
+              const getKey = () => {
+                // if it is a custom field without prefix
+                if (field?.jsonField && !key.startsWith(field.jsonField)) {
+                  if (
+                    field.jsonField === "attrs" || // only support attrs field to be set without prefix
+                    (isJsonScope && formState.fields[key]) // allow setting without prefix in json scope
+                  ) {
+                    return `${field.jsonField}.${key}`;
+                  }
+                }
+                return key;
+              };
               return {
                 ...vals,
-                [field ? `${field.jsonField}.${key}` : key]: value,
+                [getKey()]: value,
               };
             }, {});
           })();
@@ -652,7 +676,7 @@ function useActionRecord({
           const { record, fields } = get(updateFormAtom);
 
           const result = updateRecord(record, values, fields, {
-            findJsonItem: getJsonField,
+            findJsonItem,
             findItem: (fieldName: string) =>
               findViewItem(updateFormState.meta, fieldName),
           });

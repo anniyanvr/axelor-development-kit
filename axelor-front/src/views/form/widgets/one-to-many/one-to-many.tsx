@@ -76,6 +76,7 @@ import {
   FieldProps,
   usePermission,
   usePrepareWidgetContext,
+  ValueAtom,
 } from "../../builder";
 import {
   useActionExecutor,
@@ -380,13 +381,13 @@ function OneToManyInner({
           markDirty: boolean = true,
         ) => {
           const values =
-            typeof setter === "function" ? setter(get(valueAtom)!) : setter;
+            typeof setter === "function" ? setter(get(_valueAtom)!) : setter;
           lastUpdatedValueRef.current = values;
-          set(_valueAtom, values, callOnChange, markDirty);
+          return set(_valueAtom, values, callOnChange, markDirty);
         },
       ),
     [_valueAtom],
-  );
+  ) as unknown as ValueAtom<DataRecord[]>;
 
   const [value, setValue] = useAtom(
     useMemo(
@@ -1074,7 +1075,6 @@ function OneToManyInner({
                     _original: options?.record || {},
                   }),
                 }),
-              checkDirty: false,
             }),
         ...options,
       });
@@ -1815,7 +1815,7 @@ function OneToManyInner({
               view={gridViewData}
               fields={gridViewFields}
               perms={perms}
-              columnAttrs={isRootTreeGrid ? columnAttrs : treeColumnAttrs}
+              columnAttrs={isSubTreeGrid ? treeColumnAttrs : columnAttrs}
               state={state}
               setState={setState}
               actionExecutor={actionExecutor}

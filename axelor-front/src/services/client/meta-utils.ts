@@ -1,9 +1,10 @@
 import _ from "lodash";
 
 import { toKebabCase } from "@/utils/names";
+import { findViewItem } from "@/utils/schema";
 import { i18n } from "./i18n";
 import { ViewData, viewFields as fetchViewFields } from "./meta";
-import { ActionView, Field, Property, Schema } from "./meta.types";
+import { ActionView, Field, JsonField, Property, Schema } from "./meta.types";
 
 function processJsonForm(view: Schema) {
   if (view.type !== "form") return view;
@@ -328,10 +329,16 @@ export function processView(
   meta = meta || {};
   view = view || {};
 
-  if (meta.jsonAttrs && view && view.items) {
-    const hasCustomAttrsField = Object.values(meta.fields ?? {}).some(
-      (f) => f.jsonField === "attrs",
-    );
+  if (
+    meta.jsonFields &&
+    meta.jsonFields["attrs"] &&
+    Object.keys(meta.jsonFields["attrs"]).length > 0 &&
+    view &&
+    view.items
+  ) {
+    const hasCustomAttrsField =
+      Object.values(meta.fields ?? {}).some((f) => f.jsonField === "attrs") ||
+      findViewItem(meta, "attrs") != null;
 
     if (view.type === "grid" && !hasCustomAttrsField) {
       const findLast = (
@@ -361,7 +368,7 @@ export function processView(
         items.splice(index, 0, {
           type: "field",
           name: "attrs",
-          jsonFields: meta.jsonAttrs,
+          jsonFields: Object.values(meta.jsonFields["attrs"]),
         });
         return items;
       })(view.items);
@@ -376,7 +383,7 @@ export function processView(
           {
             type: "field",
             name: "attrs",
-            jsonFields: meta.jsonAttrs,
+            jsonFields: Object.values(meta.jsonFields["attrs"]),
           },
         ],
       });
@@ -448,8 +455,21 @@ export function processView(
     }
   })();
 
+  if (view.items) {
+    // Skip custom fields added in view with forceHidden
+    view.items = view.items.filter((x) => {
+      if (x.name?.includes(".") && x.jsonField) {
+        const jsonField = (view.fields ?? meta.fields ?? {})?.[x.name] ?? {};
+        if (jsonField.forceHidden) {
+          return false;
+        }
+      }
+      return true;
+    });
+  }
+
   _.forEach(view.items, (item, itemIndex) => {
-    if (['panel', 'panel-related'].includes(item.type ?? '') && !parent) {
+    if (["panel", "panel-related"].includes(item.type ?? "") && !parent) {
       item.showFrame = item.showFrame ?? true;
     } else if (item.type === "panel-tabs") {
       item.items?.forEach((sub) => {
@@ -545,6 +565,9 @@ export function processView(
       };
       let panel: Schema | null = null;
       let panelTab: Schema | null = null;
+      item.jsonFields = item.jsonFields.filter(
+        (x: JsonField) => !(x as JsonField).forceHidden,
+      );
       item.jsonFields.sort((x: Schema, y: Schema) => {
         return x.sequence - y.sequence;
       });
@@ -608,7 +631,6 @@ export function processView(
           field.type === "separator" ||
           (field.type === "many-to-many" && !field.widget)
         ) {
-          field.showTitle = false;
           field.colSpan = colSpan || 12;
         }
         if (panel) {
@@ -639,7 +661,6 @@ export function processView(
     }
   });
 
-  
   if (view.type === "grid") {
     if (view.widget) {
       view.widget = toKebabCase(view.widget);
@@ -650,7 +671,11 @@ export function processView(
       if (item.jsonFields) {
         _.forEach(item.jsonFields, (field) => {
           const type = field.type || "text";
-          if (type.indexOf("-to-many") === -1 && field.visibleInGrid) {
+          if (
+            type.indexOf("-to-many") === -1 &&
+            field.visibleInGrid &&
+            !field.forceHidden
+          ) {
             items.push({ ...field, name: item.name + "." + field.name });
           }
         });

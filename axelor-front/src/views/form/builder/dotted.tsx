@@ -10,35 +10,68 @@ import { FormAtom } from "./types";
 import { isReferenceField } from "./utils";
 
 export function DottedValues({ formAtom }: { formAtom: FormAtom }) {
-  const { findItems } = useViewMeta();
+  const { meta, findItems } = useViewMeta();
 
   const relations = useMemo(() => {
     const items = findItems();
-    const mapping: Record<string, Schema> = {};
+    const mapping: Record<string, { schema: Schema; related: string[] }> = {};
     for (const item of items) {
-      const { name } = item;
+      const { name, targetName } = item;
+
       if (name?.includes(".")) continue;
       if (name && isReferenceField(item)) {
+        const field = meta.fields?.[name];
         const prefix = `${name}.`;
-        const related = items.find((x) => x.name?.startsWith(prefix));
-        if (related) {
-          mapping[name] ??= item;
+
+        // TODO: `useFieldRelated` code is quite related. can be merged.
+        const dotted = items
+          .filter((x) => x.name?.startsWith(prefix))
+          .map((x) => x.name as string)
+          .map((x) => x.substring(prefix.length));
+
+        const relatedFields = items
+          .map((x) =>
+            [x.depends?.split(","), x.viewer?.depends?.split(",")].flat(),
+          )
+          .flat()
+          .filter(Boolean)
+          .filter((x) => x.startsWith(prefix))
+          .map((x) => x.substring(prefix.length));
+
+        const names = [...dotted, ...relatedFields].flat().filter(Boolean);
+
+        const shouldFetchTargetName =
+          item.targetName &&
+          (field?.jsonField || field?.targetName !== item.targetName);
+
+        if (names.length || shouldFetchTargetName) {
+          mapping[name] ??= {
+            schema: item,
+            related: [...new Set([...names, targetName])] as string[],
+          };
         }
       }
     }
     return Object.entries(mapping);
-  }, [findItems]);
+  }, [meta, findItems]);
 
-  return relations.map(([name, schema]) => (
-    <EnsureRelated key={name} schema={schema} formAtom={formAtom} />
+  return relations.map(([name, { schema, related }]) => (
+    <EnsureRelated
+      key={name}
+      schema={schema}
+      formAtom={formAtom}
+      related={related}
+    />
   ));
 }
 
 function EnsureRelated({
   schema,
+  related,
   formAtom,
 }: {
   schema: Schema;
+  related: string[];
   formAtom: FormAtom;
 }) {
   const { name = "" } = schema;
@@ -58,6 +91,7 @@ function EnsureRelated({
     field: schema,
     formAtom,
     valueAtom,
+    related,
   });
 
   const value = useAtomValue(valueAtom);
